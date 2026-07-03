@@ -2,6 +2,8 @@
 
 A small Windows autoclicker with Roblox focus support, shift-lock checking, a draggable mini tile, and an AHK macro launcher panel.
 
+![Autoclicker interface](assets/autoclicker-ui.png)
+
 ## Download
 
 If you only want to use the app, download `autoclicker.exe` and run it.
