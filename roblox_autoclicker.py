@@ -1314,6 +1314,12 @@ class AutoClickerApp:
                     centered_since = self._centered_since_by_hwnd.setdefault(hwnd, now)
                     if not current and now - centered_since >= 0.06:
                         self._shiftlock_by_hwnd[hwnd] = True
+                        if self.mouse_button_down("right"):
+                            self._right_block_until_release = True
+                            if self._active_button == "right":
+                                self.set_active_button(None)
+                            release_button("right")
+                            self._synthetic_button_down = None
                 else:
                     self._centered_since_by_hwnd.pop(hwnd, None)
             elif far_from_center:
