@@ -189,7 +189,7 @@ def cursor_center_distance(hwnd):
     if not user32.GetCursorPos(ctypes.byref(cursor)):
         return None
 
-    tolerance = max(8, min(28, int(min(width, height) * 0.022)))
+    tolerance = max(8, min(26, int(min(width, height) * 0.020)))
     distance = max(abs(cursor.x - center.x), abs(cursor.y - center.y))
     return distance, tolerance
 
@@ -1289,18 +1289,22 @@ class AutoClickerApp:
                     self._shift_unlock_until_by_hwnd.pop(hwnd, None)
                     if self._active_button == "right":
                         self.set_active_button(None)
+                    release_button("right")
+                    self._synthetic_button_down = None
             else:
-                self._shift_verify_until_by_hwnd[hwnd] = now + 0.5
+                self._shift_verify_until_by_hwnd[hwnd] = now + 0.25
+                if self.mouse_button_down("right"):
+                    self._right_block_until_release = True
 
         center_state = cursor_center_distance(hwnd)
         unlock_pending = now <= self._shift_unlock_until_by_hwnd.get(hwnd, 0)
-        can_check_center = center_state and (not self.mouse_button_down("right") or unlock_pending)
+        verifying_shift = now <= self._shift_verify_until_by_hwnd.get(hwnd, 0)
+        can_check_center = center_state and (not self.mouse_button_down("right") or unlock_pending or verifying_shift)
         if can_check_center:
             distance, tolerance = center_state
             current = self._shiftlock_by_hwnd.get(hwnd, False)
             tightly_centered = distance <= max(8, tolerance * 0.5)
             far_from_center = distance > tolerance * 2
-            verifying_shift = now <= self._shift_verify_until_by_hwnd.get(hwnd, 0)
 
             if tightly_centered:
                 self._off_center_since_by_hwnd.pop(hwnd, None)
@@ -1356,9 +1360,9 @@ class AutoClickerApp:
             return False
         return True
 
-    def choose_active_button(self, left_ready, right_ready):
+    def choose_active_button(self, left_ready, right_ready, prefer_right=False):
         if left_ready and right_ready:
-            if self._right_press_sequence >= self._left_press_sequence:
+            if prefer_right or self._right_press_sequence >= self._left_press_sequence:
                 return "right"
             return "left"
         if right_ready:
@@ -1411,6 +1415,7 @@ class AutoClickerApp:
         if self.running.get() and clicks_allowed:
             left_ready = self.left_enabled.get() and left_down
             right_ready = self.should_right_click(focused, right_down)
+            shiftlocked_priority = self.require_shiftlock.get() and focused and self.shiftlock_on.get()
 
             latest_right_blocked = (
                 right_down
@@ -1429,14 +1434,17 @@ class AutoClickerApp:
                 if right_pressed and (not left_pressed or self._right_press_sequence >= self._left_press_sequence):
                     self.set_active_button("right" if right_ready else None)
                 elif left_pressed:
-                    self.set_active_button("left" if left_ready else None)
+                    if shiftlocked_priority and right_ready:
+                        self.set_active_button("right")
+                    else:
+                        self.set_active_button("left" if left_ready else None)
 
                 if self._active_button == "left" and not left_ready:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready))
+                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
                 elif self._active_button == "right" and not right_ready:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready))
+                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
                 elif self._active_button is None:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready))
+                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
         else:
             self.set_active_button(None)
 
