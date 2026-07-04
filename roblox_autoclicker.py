@@ -18,6 +18,8 @@ VK_MBUTTON = 0x04
 VK_XBUTTON1 = 0x05
 VK_XBUTTON2 = 0x06
 VK_SHIFT = 0x10
+VK_LCONTROL = 0xA2
+VK_LMENU = 0xA4
 VK_F7 = 0x76
 VK_F8 = 0x77
 VK_NUMPAD0 = 0x60
@@ -62,6 +64,8 @@ VK_NAMES = {
     VK_MBUTTON: "Middle Mouse",
     VK_XBUTTON1: "Mouse 4",
     VK_XBUTTON2: "Mouse 5",
+    VK_LCONTROL: "Left Ctrl",
+    VK_LMENU: "Left Alt",
     0x6A: "Numpad *",
     0x6B: "Numpad +",
     0x6D: "Numpad -",
@@ -74,6 +78,8 @@ VK_NAMES.update({VK_NUMPAD0 + index: f"Numpad {index}" for index in range(10)})
 VK_NAMES.update({0x70 + index: f"F{index + 1}" for index in range(12)})
 
 KEYBIND_VKS = list(VK_NAMES.keys())
+KEYBIND_MODIFIER_VKS = (VK_LCONTROL, VK_LMENU)
+KEYBIND_MODIFIER_CAPTURE_VKS = (0x11, 0x12, VK_LCONTROL, VK_LMENU)
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Autoclicker")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
@@ -152,6 +158,11 @@ def key_pressed(vk, previous_down):
     return now and not previous_down, now
 
 
+def keybind_pressed(vk, modifier_vk, previous_down):
+    now = key_down(vk) and (modifier_vk is None or key_down(modifier_vk))
+    return now and not previous_down, now
+
+
 def foreground_hwnd():
     return user32.GetForegroundWindow()
 
@@ -202,7 +213,6 @@ def release_button(button):
 
 
 def click(button):
-    release_button(button)
     if button == "left":
         user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
         user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
@@ -228,8 +238,10 @@ class AutoClickerApp:
         self.theme = tk.StringVar(value="light")
 
         self.keybind_vk = VK_F8
+        self.keybind_modifier_vk = None
         self.keybind_name = VK_NAMES[VK_F8]
         self.mini_keybind_vk = VK_F7
+        self.mini_keybind_modifier_vk = None
         self.mini_keybind_name = VK_NAMES[VK_F7]
         self._last_toggle_key = False
         self._last_mini_key = False
@@ -904,7 +916,11 @@ class AutoClickerApp:
                 continue
 
             if button != last_button:
-                next_click = time.perf_counter()
+                interval = 1.0 / max(1, cps)
+                if button == "right":
+                    next_click = time.perf_counter() + 0.01
+                else:
+                    next_click = time.perf_counter()
                 last_button = button
 
             now = time.perf_counter()
@@ -953,12 +969,24 @@ class AutoClickerApp:
         keybind_vk = settings.get("keybind_vk", self.keybind_vk)
         if isinstance(keybind_vk, int) and keybind_vk in VK_NAMES:
             self.keybind_vk = keybind_vk
-            self.keybind_name = VK_NAMES[keybind_vk]
+
+        keybind_modifier_vk = settings.get("keybind_modifier_vk", self.keybind_modifier_vk)
+        if isinstance(keybind_modifier_vk, int) and keybind_modifier_vk in KEYBIND_MODIFIER_VKS:
+            self.keybind_modifier_vk = keybind_modifier_vk
+        elif keybind_modifier_vk is None:
+            self.keybind_modifier_vk = None
+        self.keybind_name = self.format_keybind_name(self.keybind_vk, self.keybind_modifier_vk)
 
         mini_keybind_vk = settings.get("mini_keybind_vk", self.mini_keybind_vk)
         if isinstance(mini_keybind_vk, int) and mini_keybind_vk in VK_NAMES:
             self.mini_keybind_vk = mini_keybind_vk
-            self.mini_keybind_name = VK_NAMES[mini_keybind_vk]
+
+        mini_keybind_modifier_vk = settings.get("mini_keybind_modifier_vk", self.mini_keybind_modifier_vk)
+        if isinstance(mini_keybind_modifier_vk, int) and mini_keybind_modifier_vk in KEYBIND_MODIFIER_VKS:
+            self.mini_keybind_modifier_vk = mini_keybind_modifier_vk
+        elif mini_keybind_modifier_vk is None:
+            self.mini_keybind_modifier_vk = None
+        self.mini_keybind_name = self.format_keybind_name(self.mini_keybind_vk, self.mini_keybind_modifier_vk)
 
         mini_x = settings.get("mini_x", self.mini_x)
         mini_y = settings.get("mini_y", self.mini_y)
@@ -998,7 +1026,9 @@ class AutoClickerApp:
             "cps": self.cps.get(),
             "theme": self.theme.get(),
             "keybind_vk": self.keybind_vk,
+            "keybind_modifier_vk": self.keybind_modifier_vk,
             "mini_keybind_vk": self.mini_keybind_vk,
+            "mini_keybind_modifier_vk": self.mini_keybind_modifier_vk,
             "mini_x": self.mini_x,
             "mini_y": self.mini_y,
             "ahk_folder": self.ahk_folder,
@@ -1156,8 +1186,19 @@ class AutoClickerApp:
         else:
             self.keybind_box.configure(text="Press key/button...")
 
+    def format_keybind_name(self, vk, modifier_vk=None):
+        if modifier_vk:
+            return f"{VK_NAMES[modifier_vk]} + {VK_NAMES[vk]}"
+        return VK_NAMES[vk]
+
     def any_keybind_key_down(self):
         return any(key_down(vk) for vk in KEYBIND_VKS)
+
+    def modifier_key_down(self):
+        for vk in KEYBIND_MODIFIER_VKS:
+            if key_down(vk):
+                return vk
+        return None
 
     def capture_keybind_if_ready(self):
         if self._capture_target is None:
@@ -1167,16 +1208,22 @@ class AutoClickerApp:
             self._capture_armed = not self.any_keybind_key_down()
             return True
 
+        modifier_vk = self.modifier_key_down()
         for vk in KEYBIND_VKS:
+            if modifier_vk and vk in KEYBIND_MODIFIER_CAPTURE_VKS:
+                continue
             if key_down(vk):
+                keybind_name = self.format_keybind_name(vk, modifier_vk)
                 if self._capture_target == "mini":
                     self.mini_keybind_vk = vk
-                    self.mini_keybind_name = VK_NAMES[vk]
+                    self.mini_keybind_modifier_vk = modifier_vk
+                    self.mini_keybind_name = keybind_name
                     self._last_mini_key = True
                     self.mini_keybind_box.configure(text=f"Mini keybind: {self.mini_keybind_name}")
                 else:
                     self.keybind_vk = vk
-                    self.keybind_name = VK_NAMES[vk]
+                    self.keybind_modifier_vk = modifier_vk
+                    self.keybind_name = keybind_name
                     self._last_toggle_key = True
                     self.keybind_box.configure(text=f"Keybind: {self.keybind_name}")
 
@@ -1391,11 +1438,19 @@ class AutoClickerApp:
             self.clean_ahk_processes()
 
         if not self.capture_keybind_if_ready():
-            toggle_pressed, self._last_toggle_key = key_pressed(self.keybind_vk, self._last_toggle_key)
+            toggle_pressed, self._last_toggle_key = keybind_pressed(
+                self.keybind_vk,
+                self.keybind_modifier_vk,
+                self._last_toggle_key,
+            )
             if toggle_pressed:
                 self.toggle_running()
 
-            mini_pressed, self._last_mini_key = key_pressed(self.mini_keybind_vk, self._last_mini_key)
+            mini_pressed, self._last_mini_key = keybind_pressed(
+                self.mini_keybind_vk,
+                self.mini_keybind_modifier_vk,
+                self._last_mini_key,
+            )
             if mini_pressed:
                 self.toggle_mini_mode()
 
@@ -1421,12 +1476,16 @@ class AutoClickerApp:
         if self.running.get() and clicks_allowed:
             left_ready = self.left_enabled.get() and left_down
             right_ready = self.should_right_click(focused, right_down)
+            both_buttons_down = left_down and right_down
+            if both_buttons_down:
+                right_ready = False
             shiftlocked_priority = self.require_shiftlock.get() and focused and self.shiftlock_on.get()
 
             latest_right_blocked = (
                 right_down
                 and self._right_press_sequence > self._left_press_sequence
                 and not right_ready
+                and not both_buttons_down
             )
             latest_left_blocked = (
                 left_down
