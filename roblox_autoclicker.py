@@ -916,7 +916,7 @@ class AutoClickerApp:
                 continue
 
             if button != last_button:
-                next_click = time.perf_counter() + 0.01
+                next_click = time.perf_counter() + 0.025
                 last_button = button
 
             now = time.perf_counter()
