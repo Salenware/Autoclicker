@@ -251,6 +251,10 @@ class AutoClickerApp:
         self._mini_tile = None
         self._mini_drag = None
         self._mini_moved = False
+        self._last_state_look = None
+        self._last_mini_look = None
+        self._last_shift_status = None
+        self._loop_delay_ms = 15
         self.mini_x = 80
         self.mini_y = 80
         self._last_shift_key = False
@@ -304,7 +308,7 @@ class AutoClickerApp:
         self.add_setting_traces()
         self.install_mouse_hook()
         self.start_click_worker()
-        self.root.after(5, self._loop)
+        self.root.after(self._loop_delay_ms, self._loop)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build_ui(self):
@@ -916,7 +920,7 @@ class AutoClickerApp:
                 continue
 
             if button != last_button:
-                next_click = time.perf_counter() + 0.025
+                next_click = time.perf_counter() + 0.05
                 last_button = button
 
             now = time.perf_counter()
@@ -1060,7 +1064,10 @@ class AutoClickerApp:
         else:
             text = "Shift lock: OFF"
             color = "#9a3412"
-        self.shift_label.configure(text=text, foreground=color)
+        look = (text, color)
+        if self._last_shift_status != look:
+            self.shift_label.configure(text=text, foreground=color)
+            self._last_shift_status = look
 
     def toggle_running(self):
         self.running.set(not self.running.get())
@@ -1074,9 +1081,13 @@ class AutoClickerApp:
 
     def update_status(self):
         text, background = self.status_look()
-        self.state_box.configure(text=text, background=background, foreground="#ffffff")
-        if self._mini_tile:
+        look = (text, background)
+        if self._last_state_look != look:
+            self.state_box.configure(text=text, background=background, foreground="#ffffff")
+            self._last_state_look = look
+        if self._mini_tile and self._last_mini_look != look:
             self._mini_tile.configure(text=text, background=background, foreground="#ffffff")
+            self._last_mini_look = look
 
     def update_roblox_only_status(self):
         if self.roblox_only.get():
@@ -1409,17 +1420,6 @@ class AutoClickerApp:
             return False
         return True
 
-    def choose_active_button(self, left_ready, right_ready, prefer_right=False):
-        if left_ready and right_ready:
-            if prefer_right or self._right_press_sequence >= self._left_press_sequence:
-                return "right"
-            return "left"
-        if right_ready:
-            return "right"
-        if left_ready:
-            return "left"
-        return None
-
     def set_active_button(self, button):
         with self._click_lock:
             if button != self._active_button:
@@ -1472,44 +1472,23 @@ class AutoClickerApp:
         if self.running.get() and clicks_allowed:
             left_ready = self.left_enabled.get() and left_down
             right_ready = self.should_right_click(focused, right_down)
-            both_buttons_down = left_down and right_down
-            if both_buttons_down:
+            if left_down and right_down:
                 right_ready = False
-            shiftlocked_priority = self.require_shiftlock.get() and focused and self.shiftlock_on.get()
 
-            latest_right_blocked = (
-                right_down
-                and self._right_press_sequence > self._left_press_sequence
-                and not right_ready
-                and not both_buttons_down
-            )
-            latest_left_blocked = (
-                left_down
-                and self._left_press_sequence > self._right_press_sequence
-                and not left_ready
-            )
-
-            if latest_right_blocked or latest_left_blocked:
-                self.set_active_button(None)
+            if self._active_button == "left":
+                if not left_ready:
+                    self.set_active_button(None)
+            elif self._active_button == "right":
+                if not right_ready:
+                    self.set_active_button(None)
             else:
-                if right_pressed and (not left_pressed or self._right_press_sequence >= self._left_press_sequence):
-                    self.set_active_button("right" if right_ready else None)
-                elif left_pressed:
-                    if shiftlocked_priority and right_ready:
-                        self.set_active_button("right")
-                    else:
-                        self.set_active_button("left" if left_ready else None)
-
-                if self._active_button == "left" and not left_ready:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
-                elif self._active_button == "right" and not right_ready:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
-                elif self._active_button is None:
-                    self.set_active_button(self.choose_active_button(left_ready, right_ready, shiftlocked_priority))
+                if left_pressed and left_ready and not right_down:
+                    self.set_active_button("left")
+                elif right_pressed and right_ready and not left_down:
+                    self.set_active_button("right")
         else:
             self.set_active_button(None)
-
-        self.root.after(5, self._loop)
+        self.root.after(self._loop_delay_ms, self._loop)
 
     def close(self):
         self.stop_click_worker()
