@@ -258,23 +258,18 @@ class AutoClickerApp:
         self.mini_x = 80
         self.mini_y = 80
         self._last_shift_key = False
-        self._last_click_time = 0.0
-        self._active_button = None
-        self._synthetic_button_down = None
+        self._left_click_active = False
+        self._right_click_active = False
         self._cps_value = self.cps.get()
         self._click_lock = threading.RLock()
+        self._click_emit_lock = threading.Lock()
         self._click_thread_stop = threading.Event()
-        self._click_thread = None
+        self._click_threads = []
         self._mouse_hook = None
         self._mouse_hook_proc = None
         self._physical_left_down = False
         self._physical_right_down = False
         self._right_block_until_release = False
-        self._left_was_down = False
-        self._right_was_down = False
-        self._press_sequence = 0
-        self._left_press_sequence = 0
-        self._right_press_sequence = 0
         self._active_hwnd = None
         self._shiftlock_by_hwnd = {}
         self._last_center_distance_by_hwnd = {}
@@ -307,7 +302,7 @@ class AutoClickerApp:
         self.apply_always_on_top()
         self.add_setting_traces()
         self.install_mouse_hook()
-        self.start_click_worker()
+        self.start_click_workers()
         self.root.after(self._loop_delay_ms, self._loop)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -888,40 +883,38 @@ class AutoClickerApp:
             return key_down(VK_LBUTTON)
         return key_down(VK_RBUTTON)
 
-    def release_synthetic_button(self):
-        with self._click_lock:
-            if self._synthetic_button_down:
-                release_button(self._synthetic_button_down)
-                self._synthetic_button_down = None
+    def start_click_workers(self):
+        self._click_threads = [
+            threading.Thread(target=self.click_worker, args=(button,), daemon=True)
+            for button in ("left", "right")
+        ]
+        for thread in self._click_threads:
+            thread.start()
 
-    def start_click_worker(self):
-        self._click_thread = threading.Thread(target=self.click_worker, daemon=True)
-        self._click_thread.start()
-
-    def stop_click_worker(self):
+    def stop_click_workers(self):
         self._click_thread_stop.set()
-        thread = self._click_thread
-        if thread and thread.is_alive():
-            thread.join(timeout=0.25)
-        self._click_thread = None
+        for thread in self._click_threads:
+            if thread.is_alive():
+                thread.join(timeout=0.25)
+        self._click_threads = []
 
-    def click_worker(self):
+    def click_worker(self, button):
         next_click = time.perf_counter()
-        last_button = None
+        was_active = False
         while not self._click_thread_stop.is_set():
             with self._click_lock:
-                button = self._active_button
+                active = self._left_click_active if button == "left" else self._right_click_active
                 cps = self._cps_value
 
-            if not button:
+            if not active:
                 next_click = time.perf_counter()
-                last_button = None
+                was_active = False
                 self._click_thread_stop.wait(0.002)
                 continue
 
-            if button != last_button:
+            if not was_active:
                 next_click = time.perf_counter() + 0.05
-                last_button = button
+                was_active = True
 
             now = time.perf_counter()
             delay = next_click - now
@@ -929,18 +922,12 @@ class AutoClickerApp:
                 self._click_thread_stop.wait(min(delay, 0.004))
                 continue
 
-            with self._click_lock:
-                button = self._active_button
-                if button:
-                    if self.mouse_button_down(button):
+            if self.click_active(button) and self.mouse_button_down(button):
+                with self._click_emit_lock:
+                    if self.click_active(button) and self.mouse_button_down(button):
                         click(button)
-                        self._synthetic_button_down = None
-                        self._last_click_time = time.monotonic()
-                    else:
-                        if self._synthetic_button_down:
-                            release_button(self._synthetic_button_down)
-                        self._active_button = None
-                        self._synthetic_button_down = None
+            else:
+                self.set_click_active(button, False)
 
             interval = 1.0 / max(1, cps)
             next_click = time.perf_counter() + interval
@@ -1072,7 +1059,7 @@ class AutoClickerApp:
     def toggle_running(self):
         self.running.set(not self.running.get())
         if not self.running.get():
-            self.set_active_button(None)
+            self.stop_all_clicks()
         self.update_status()
 
     def toggle_roblox_only(self):
@@ -1341,10 +1328,8 @@ class AutoClickerApp:
                     self._right_block_until_release = True
                     self._shiftlock_by_hwnd[hwnd] = False
                     self._shift_unlock_until_by_hwnd.pop(hwnd, None)
-                    if self._active_button == "right":
-                        self.set_active_button(None)
+                    self.set_click_active("right", False)
                     release_button("right")
-                    self._synthetic_button_down = None
             else:
                 self._shift_verify_until_by_hwnd[hwnd] = now + 0.25
                 if self.mouse_button_down("right"):
@@ -1370,10 +1355,8 @@ class AutoClickerApp:
                         self._shiftlock_by_hwnd[hwnd] = True
                         if self.mouse_button_down("right"):
                             self._right_block_until_release = True
-                            if self._active_button == "right":
-                                self.set_active_button(None)
+                            self.set_click_active("right", False)
                             release_button("right")
-                            self._synthetic_button_down = None
                 else:
                     self._centered_since_by_hwnd.pop(hwnd, None)
             elif far_from_center:
@@ -1384,8 +1367,7 @@ class AutoClickerApp:
                     self._shift_unlock_until_by_hwnd.pop(hwnd, None)
                     if self.mouse_button_down("right"):
                         self._right_block_until_release = True
-                        if self._active_button == "right":
-                            self.set_active_button(None)
+                        self.set_click_active("right", False)
                 elif current and now - off_center_since >= 0.12:
                     self._shiftlock_by_hwnd[hwnd] = False
                 elif verifying_shift and not current and now - off_center_since >= 0.08:
@@ -1420,12 +1402,23 @@ class AutoClickerApp:
             return False
         return True
 
-    def set_active_button(self, button):
+    def click_active(self, button):
         with self._click_lock:
-            if button != self._active_button:
-                self.release_synthetic_button()
-                self._active_button = button
-                self._last_click_time = 0.0
+            if button == "left":
+                return self._left_click_active
+            return self._right_click_active
+
+    def set_click_active(self, button, active):
+        with self._click_lock:
+            if button == "left":
+                self._left_click_active = active
+            else:
+                self._right_click_active = active
+
+    def stop_all_clicks(self):
+        with self._click_lock:
+            self._left_click_active = False
+            self._right_click_active = False
 
     def _loop(self):
         now = time.monotonic()
@@ -1457,43 +1450,18 @@ class AutoClickerApp:
         right_down = self.mouse_button_down("right")
         if not right_down:
             self._right_block_until_release = False
-        left_pressed = left_down and not self._left_was_down
-        right_pressed = right_down and not self._right_was_down
-        self._left_was_down = left_down
-        self._right_was_down = right_down
-
-        if left_pressed:
-            self._press_sequence += 1
-            self._left_press_sequence = self._press_sequence
-        if right_pressed:
-            self._press_sequence += 1
-            self._right_press_sequence = self._press_sequence
-
         if self.running.get() and clicks_allowed:
             left_ready = self.left_enabled.get() and left_down
             right_ready = self.should_right_click(focused, right_down)
-            if left_down and right_down:
-                right_ready = False
-
-            if self._active_button == "left":
-                if not left_ready:
-                    self.set_active_button(None)
-            elif self._active_button == "right":
-                if not right_ready:
-                    self.set_active_button(None)
-            else:
-                if left_pressed and left_ready and not right_down:
-                    self.set_active_button("left")
-                elif right_pressed and right_ready and not left_down:
-                    self.set_active_button("right")
+            self.set_click_active("left", left_ready)
+            self.set_click_active("right", right_ready)
         else:
-            self.set_active_button(None)
+            self.stop_all_clicks()
         self.root.after(self._loop_delay_ms, self._loop)
 
     def close(self):
-        self.stop_click_worker()
-        self.set_active_button(None)
-        self.release_synthetic_button()
+        self.stop_all_clicks()
+        self.stop_click_workers()
         self.uninstall_mouse_hook()
         self.stop_all_ahk_macros()
         self.root.destroy()
